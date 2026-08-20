@@ -522,8 +522,11 @@ SurfaceFlinger::SurfaceFlinger(Factory& factory) : SurfaceFlinger(factory, SkipI
 
     mDebugFlashDelay = base::GetUintProperty("debug.sf.showupdates"s, 0u);
 
-    mBackpressureGpuComposition = base::GetBoolProperty("debug.sf.enable_gl_backpressure"s, true);
+    mBackpressureGpuComposition =
+            base::GetBoolProperty("debug.sf.enable_gl_backpressure"s, true);
     ALOGI_IF(mBackpressureGpuComposition, "Enabling backpressure for GPU composition");
+    ALOGI("ARDA_H264_PRODUCTION_V1 gl_backpressure=%d",
+          mBackpressureGpuComposition ? 1 : 0);
 
     property_get("ro.surface_flinger.supports_background_blur", value, "0");
     bool supportsBlurs = atoi(value);
@@ -3353,6 +3356,22 @@ CompositeResultsPerDisplay SurfaceFlinger::composite(
     }
 
     if (mScheduler->onCompositionPresented(presentTime)) {
+        scheduleComposite(FrameHint::kNone);
+    }
+
+    // ARDA_H264_PRODUCTION_V1: a HAL-backed virtual display is a continuous
+    // video sink. Keep one next composition armed for as long as it exists.
+    // GPU-backed virtual displays retain upstream event-driven behavior.
+    bool ardaHasHalVirtualDisplay = false;
+    for (const auto& [_, display] : FTL_FAKE_GUARD(mStateLock, mDisplays)) {
+        if (display->isVirtual() &&
+            std::holds_alternative<HalVirtualDisplayId>(
+                    display->getDisplayIdVariant())) {
+            ardaHasHalVirtualDisplay = true;
+            break;
+        }
+    }
+    if (ardaHasHalVirtualDisplay) {
         scheduleComposite(FrameHint::kNone);
     }
 

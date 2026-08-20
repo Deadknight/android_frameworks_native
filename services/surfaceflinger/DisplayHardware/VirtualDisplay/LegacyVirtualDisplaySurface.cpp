@@ -128,7 +128,11 @@ status_t LegacyVirtualDisplaySurface::beginFrame(bool mustRecompose) {
         return NO_ERROR;
     }
 
-    mMustRecompose = mustRecompose;
+    // ARDA_H264_PRODUCTION_V1: LegacyVirtualDisplaySurface reaches this
+    // point only for HWC-backed VDS frames. A video sink requires a buffer for
+    // every scheduled frame even when CompositionEngine sees unchanged content.
+    (void)mustRecompose;
+    mMustRecompose = true;
 
     VDS_LOGW_IF(mDebugState != DebugState::Idle, "Unexpected %s in %s state", __func__,
                 ftl::enum_string(mDebugState).c_str());
