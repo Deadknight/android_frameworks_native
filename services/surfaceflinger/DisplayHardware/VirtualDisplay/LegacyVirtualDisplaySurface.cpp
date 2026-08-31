@@ -32,6 +32,17 @@
 #include <system/window.h>
 
 #include "DisplayHardware/HWComposer.h"
+#include "DisplayHardware/ArdaPctDirectMirror.h"
+
+namespace android {
+bool ardaPctDirectMirrorTxpBypassReadyBridge() {
+    return ardaPctDirectMirrorTxpBypassReady();
+}
+bool ardaPctDirectRouteEnabledBridge() {
+    return ardaPctDirectRouteEnabled();
+}
+} // namespace android
+
 #include "LegacyVirtualDisplaySurface.h"
 #include "SurfaceFlinger.h"
 
@@ -79,6 +90,10 @@ LegacyVirtualDisplaySurface::LegacyVirtualDisplaySurface(HWComposer& hwc,
     mSinkBufferWidth = sinkWidth;
     mSinkBufferHeight = sinkHeight;
 
+    if (mDisplayName.find("ScreenRecorder") != std::string::npos) {
+        ardaPctDirectMirrorRegisterSink(mSource[SOURCE_SINK]);
+    }
+
     // Pick the buffer format to request from the sink when not rendering to it
     // with GPU. If the consumer needs CPU access, use the default format
     // set by the consumer. Otherwise allow gralloc to decide the format based
@@ -120,6 +135,9 @@ void LegacyVirtualDisplaySurface::onFirstRef() {
 }
 
 LegacyVirtualDisplaySurface::~LegacyVirtualDisplaySurface() {
+    if (mDisplayName.find("ScreenRecorder") != std::string::npos) {
+        ardaPctDirectMirrorUnregisterSink(mSource[SOURCE_SINK]);
+    }
     mSource[SOURCE_SCRATCH]->disconnect(NATIVE_WINDOW_API_EGL);
 }
 
@@ -253,6 +271,27 @@ void LegacyVirtualDisplaySurface::onFrameCommitted() {
                 ftl::enum_string(mDebugState).c_str());
     mDebugState = DebugState::Idle;
 
+    if (mDisplayName.find("ScreenRecorder") != std::string::npos &&
+        ardaPctDirectMirrorTxpBypassReady()) {
+        if (mCompositionType == CompositionType::Mixed && mFbProducerSlot >= 0) {
+            Mutex::Autolock lock(mMutex);
+            int sslot = mapProducer2SourceSlot(SOURCE_SCRATCH, mFbProducerSlot);
+            addReleaseFenceLocked(sslot, mProducerBuffers[mFbProducerSlot], mFbFence);
+            releaseBufferLocked(sslot, mProducerBuffers[mFbProducerSlot]);
+        }
+        if (mOutputProducerSlot >= 0) {
+            int sslot = mapProducer2SourceSlot(SOURCE_SINK, mOutputProducerSlot);
+            mSource[SOURCE_SINK]->cancelBuffer(sslot, mOutputFence);
+        }
+        static uint64_t ardaPctCommitBypass = 0;
+        ++ardaPctCommitBypass;
+        if (ardaPctCommitBypass <= 5 || ardaPctCommitBypass % 60 == 0) {
+            ALOGI("ARDA_PCT_TXP_LEGACY_COMMIT_BYPASS frame=%" PRIu64, ardaPctCommitBypass);
+        }
+        resetPerFrameState();
+        return;
+    }
+
     sp<Fence> retireFence = mHwc.getPresentFence(*halDisplayId);
     if (mCompositionType == CompositionType::Mixed && mFbProducerSlot >= 0) {
         // release the scratch buffer back to the pool
@@ -267,7 +306,16 @@ void LegacyVirtualDisplaySurface::onFrameCommitted() {
         int sslot = mapProducer2SourceSlot(SOURCE_SINK, mOutputProducerSlot);
         QueueBufferOutput qbo;
         VDS_LOGV("%s: queue sink sslot=%d", __func__, sslot);
-        if (mMustRecompose) {
+        if (ardaPctDirectMirrorShouldSuppressTxp(mSource[SOURCE_SINK])) {
+            mSource[SOURCE_SINK]->cancelBuffer(sslot, retireFence);
+            ardaPctDirectMirrorArmTxpBypass(mSource[SOURCE_SINK]);
+            static uint64_t ardaPctSuppressed = 0;
+            ++ardaPctSuppressed;
+            if (ardaPctSuppressed <= 5 || ardaPctSuppressed % 60 == 0) {
+                ALOGI("ARDA_PCT_DIRECT_TXP_SINK_SUPPRESSED frame=%" PRIu64,
+                      ardaPctSuppressed);
+            }
+        } else if (mMustRecompose) {
             status_t result =
                     mSource[SOURCE_SINK]
                             ->queueBuffer(sslot,
@@ -357,12 +405,29 @@ status_t LegacyVirtualDisplaySurface::dequeueBuffer(Source source, PixelFormat f
             if ((mProducerSlotSource & (1ULL << i)) == sourceBit) mProducerBuffers[i].clear();
         }
     }
-    if (result & BUFFER_NEEDS_REALLOCATION) {
+    // ARDA_V22_VDS_NULL_OUTPUT_BUFFER_RECOVERY_V1: Direct-PCT can perturb BufferQueue slot ownership through
+    // attach/detach/reuse. A successful dequeue may therefore hand us a slot whose
+    // local GraphicBuffer cache is empty even when BUFFER_NEEDS_REALLOCATION was
+    // not propagated. Never let a null GraphicBuffer escape to HWC2::setOutputBuffer.
+    const bool ardaProducerBufferMissing = mProducerBuffers[pslot] == nullptr;
+    if (ardaProducerBufferMissing && !(result & BUFFER_NEEDS_REALLOCATION)) {
+        ALOGW("ARDA_V22_VDS_NULL_OUTPUT_BUFFER_RECOVERY_V1 FORCE_REQUEST source=%d sslot=%d pslot=%d dequeueResult=%d",
+              static_cast<int>(source), *sslot, pslot, result);
+    }
+
+    if ((result & BUFFER_NEEDS_REALLOCATION) || ardaProducerBufferMissing) {
         result = mSource[source]->requestBuffer(*sslot, &mProducerBuffers[pslot]);
         if (result < 0) {
             mProducerBuffers[pslot].clear();
             mSource[source]->cancelBuffer(*sslot, *fence);
             return result;
+        }
+
+        if (mProducerBuffers[pslot] == nullptr) {
+            ALOGE("ARDA_V22_VDS_NULL_OUTPUT_BUFFER_RECOVERY_V1 REQUEST_RETURNED_NULL source=%d sslot=%d pslot=%d",
+                  static_cast<int>(source), *sslot, pslot);
+            mSource[source]->cancelBuffer(*sslot, *fence);
+            return NO_MEMORY;
         }
         VDS_LOGV("%s(%s): buffers[%d]=%p fmt=%d usage=%#" PRIx64, __func__,
                  ftl::enum_string(source).c_str(), pslot, mProducerBuffers[pslot].get(),
@@ -635,10 +700,32 @@ status_t LegacyVirtualDisplaySurface::refreshOutputBuffer() {
     if (result < 0) return result;
     mOutputProducerSlot = mapSource2ProducerSlot(SOURCE_SINK, sslot);
 
+    if (mDisplayName.find("ScreenRecorder") != std::string::npos &&
+        mProducerBuffers[mOutputProducerSlot] != nullptr) {
+        ardaPctDirectMirrorSetGeneration(
+                mSource[SOURCE_SINK],
+                mProducerBuffers[mOutputProducerSlot]->getGenerationNumber());
+    }
+
     // On GPU-only frames, we don't have the right output buffer acquire fence
     // until after GPU calls queueBuffer(). So here we just set the buffer
     // (for use in HWC prepare) but not the fence; we'll call this again with
     // the proper fence once we have it.
+
+    // ARDA_V22_VDS_NULL_OUTPUT_BUFFER_RECOVERY_V1: final crash barrier. HWC2::Display::setOutputBuffer dereferences
+    // GraphicBuffer unconditionally, so a missing producer cache entry must be
+    // handled here instead of crossing the HWC boundary.
+    if (mOutputProducerSlot < 0 || mProducerBuffers[mOutputProducerSlot] == nullptr) {
+        ALOGE("ARDA_V22_VDS_NULL_OUTPUT_BUFFER_RECOVERY_V1 NULL_OUTPUT_GUARD sslot=%d pslot=%d",
+              sslot, mOutputProducerSlot);
+        if (mOutputProducerSlot >= 0) {
+            mSource[SOURCE_SINK]->cancelBuffer(sslot, mOutputFence);
+        }
+        mOutputProducerSlot = BufferQueue::INVALID_BUFFER_SLOT;
+        mOutputFence = Fence::NO_FENCE;
+        return NO_MEMORY;
+    }
+
     result = mHwc.setOutputBuffer(*halVirtualDisplayId, Fence::NO_FENCE,
                                   mProducerBuffers[mOutputProducerSlot]);
 

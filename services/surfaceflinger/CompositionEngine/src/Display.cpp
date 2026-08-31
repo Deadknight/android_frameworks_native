@@ -39,6 +39,8 @@
 
 #include "PowerAdvisor/PowerAdvisor.h"
 
+namespace android { bool ardaPctDirectMirrorTxpBypassReadyBridge(); }
+
 using aidl::android::hardware::graphics::composer3::Capability;
 using aidl::android::hardware::graphics::composer3::DisplayCapability;
 
@@ -415,6 +417,16 @@ void Display::executeCommands() {
 
 compositionengine::Output::FrameFences Display::presentFrame() {
     auto fences = impl::Output::presentFrame();
+
+    if (isVirtual() && getName().find("ScreenRecorder") != std::string::npos &&
+        ::android::ardaPctDirectMirrorTxpBypassReadyBridge()) {
+        static unsigned long long ardaPctPresentBypass = 0;
+        ++ardaPctPresentBypass;
+        if (ardaPctPresentBypass <= 5 || ardaPctPresentBypass % 60 == 0) {
+            ALOGI("ARDA_PCT_TXP_HWC_PRESENT_BYPASS frame=%llu", ardaPctPresentBypass);
+        }
+        return fences;
+    }
 
     const auto halDisplayIdOpt = getDisplayIdVariant().and_then(asHalDisplayId<DisplayIdVariant>);
     if (mIsDisconnected || !halDisplayIdOpt) {

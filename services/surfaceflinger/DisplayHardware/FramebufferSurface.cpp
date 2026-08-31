@@ -42,6 +42,7 @@
 #include "FramebufferSurface.h"
 #include "HWComposer.h"
 #include "../SurfaceFlinger.h"
+#include "ArdaPctDirectMirror.h"
 
 namespace android {
 
@@ -140,6 +141,14 @@ status_t FramebufferSurface::advanceFrame(float hdrSdrRatio) {
     if (result != NO_ERROR) {
         ALOGE("error posting framebuffer: %s (%d)", strerror(-result), result);
         return result;
+    }
+
+    if (mCurrentBuffer != nullptr && mCurrentBuffer->width == 1920 &&
+        mCurrentBuffer->height == 1080 && mCurrentBuffer->stride == 1920) {
+        status_t ardaQueue = ardaPctDirectMirrorQueue(mCurrentBuffer, mCurrentFence);
+        ALOGE_IF(ardaQueue != NO_ERROR && ardaQueue != NO_INIT && ardaQueue != WOULD_BLOCK,
+                  "ARDA_PCT_DIRECT_PHYSICAL_QUEUE_FAIL err=%d source=%" PRIu64,
+                  ardaQueue, mCurrentBuffer->getId());
     }
 
     return NO_ERROR;

@@ -59,6 +59,8 @@
 
 #include "TracedOrdinal.h"
 
+namespace android { bool ardaPctDirectRouteEnabledBridge(); }
+
 using aidl::android::hardware::graphics::composer3::Composition;
 
 namespace android::compositionengine {
@@ -1497,10 +1499,29 @@ renderengine::DisplaySettings Output::generateClientCompositionDisplaySettings(
 
     renderengine::DisplaySettings clientCompositionDisplay;
     clientCompositionDisplay.namePlusId = mNamePlusId;
-    clientCompositionDisplay.physicalDisplay = outputState.framebufferSpace.getContent();
+
+    const auto ardaPctFb = outputState.framebufferSpace.getBounds();
+    const auto ardaPctDs = outputState.displaySpace.getBounds();
+    const bool ardaPctFullPhysical =
+            ::android::ardaPctDirectRouteEnabledBridge() &&
+            ardaPctFb.width == 1920 && ardaPctFb.height == 1080 &&
+            ardaPctDs.width == 1024 && ardaPctDs.height == 768;
+
+    clientCompositionDisplay.physicalDisplay = ardaPctFullPhysical
+            ? Rect(0, 0, 1920, 1080)
+            : outputState.framebufferSpace.getContent();
     clientCompositionDisplay.clip = outputState.layerStackSpace.getContent();
-    clientCompositionDisplay.orientation =
-            ui::Transform::toRotationFlags(outputState.displaySpace.getOrientation());
+    clientCompositionDisplay.orientation = ardaPctFullPhysical
+            ? ui::Transform::toRotationFlags(ui::ROTATION_0)
+            : ui::Transform::toRotationFlags(outputState.displaySpace.getOrientation());
+
+    if (ardaPctFullPhysical) {
+        static bool ardaPctRenderLogged = false;
+        if (!ardaPctRenderLogged) {
+            ALOGI("ARDA_PCT_DIRECT_FULL_PHYSICAL_RENDER target=1920x1080 ROT0");
+            ardaPctRenderLogged = true;
+        }
+    }
     clientCompositionDisplay.outputDataspace = mDisplayColorProfile->hasWideColorGamut()
             ? outputState.dataspace
             : ui::Dataspace::UNKNOWN;

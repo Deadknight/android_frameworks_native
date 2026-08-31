@@ -44,6 +44,8 @@
 #include "RefreshRateOverlay.h"
 #include "SurfaceFlinger.h"
 
+namespace android { bool ardaPctDirectRouteEnabledBridge(); }
+
 namespace android {
 
 namespace hal = hardware::graphics::composer::hal;
@@ -69,15 +71,29 @@ DisplayDevice::DisplayDevice(DisplayDeviceCreationArgs& args)
         mRefreshRateSelector(std::move(args.refreshRateSelector)) {
     mCompositionDisplay->editState().isSecure = args.isSecure;
     mCompositionDisplay->editState().isProtected = args.isProtected;
+
+    const int32_t ardaNativeWidth = ANativeWindow_getWidth(args.nativeWindow.get());
+    const int32_t ardaNativeHeight = ANativeWindow_getHeight(args.nativeWindow.get());
+    const bool ardaPctPhysical =
+            ::android::ardaPctDirectRouteEnabledBridge() &&
+            args.isPrimary && ardaNativeWidth == 1024 && ardaNativeHeight == 768;
+
     mCompositionDisplay->createRenderSurface(
             compositionengine::RenderSurfaceCreationArgsBuilder()
-                    .setDisplayWidth(ANativeWindow_getWidth(args.nativeWindow.get()))
-                    .setDisplayHeight(ANativeWindow_getHeight(args.nativeWindow.get()))
+                    .setDisplayWidth(ardaNativeWidth)
+                    .setDisplayHeight(ardaNativeHeight)
                     .setNativeWindow(std::move(args.nativeWindow))
                     .setDisplaySurface(std::move(args.displaySurface))
                     .setMaxTextureCacheSize(
                             static_cast<size_t>(SurfaceFlinger::maxFrameBufferAcquiredBuffers))
                     .build());
+
+    if (ardaPctPhysical) {
+        ALOGI("ARDA_PCT_DIRECT_PHYSICAL_BUFFER_1080 native=1024x768 target=1920x1080");
+        const ui::Size ardaFramebufferSize{1920, 1080};
+        mCompositionDisplay->getRenderSurface()->setDisplaySize(ardaFramebufferSize);
+        mCompositionDisplay->editState().framebufferSpace.setBounds(ardaFramebufferSize);
+    }
 
     if (!mFlinger->mDisableClientCompositionCache &&
         SurfaceFlinger::maxFrameBufferAcquiredBuffers > 0) {

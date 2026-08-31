@@ -37,6 +37,8 @@
 
 #include "DisplayHardware/HWComposer.h"
 
+namespace android { bool ardaPctDirectRouteEnabledBridge(); }
+
 // TODO(b/129481165): remove the #pragma below and fix conversion issues
 #pragma clang diagnostic pop // ignored "-Wconversion"
 
@@ -440,8 +442,23 @@ void OutputLayer::updateCompositionState(
 
     // These are evaluated every frame as they can potentially change at any
     // time.
+    const auto ardaPctFbBounds = outputState.framebufferSpace.getBounds();
+    const auto ardaPctDisplayBounds = outputState.displaySpace.getBounds();
+    const bool ardaPctForcePhysicalClient =
+            ::android::ardaPctDirectRouteEnabledBridge() &&
+            ardaPctFbBounds.width == 1920 && ardaPctFbBounds.height == 1080 &&
+            ardaPctDisplayBounds.width == 1024 && ardaPctDisplayBounds.height == 768;
+
+    if (ardaPctForcePhysicalClient) {
+        static bool ardaPctForceLogged = false;
+        if (!ardaPctForceLogged) {
+            ALOGI("ARDA_PCT_DIRECT_FORCE_PHYSICAL_CLIENT framebuffer=1920x1080 display=1024x768");
+            ardaPctForceLogged = true;
+        }
+    }
+
     if (layerFEState->forceClientComposition || !profile.isDataspaceSupported(state.dataspace) ||
-        forceClientComposition) {
+        forceClientComposition || ardaPctForcePhysicalClient) {
         state.forceClientComposition = true;
     }
 }
