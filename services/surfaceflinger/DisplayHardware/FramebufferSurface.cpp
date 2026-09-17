@@ -143,8 +143,9 @@ status_t FramebufferSurface::advanceFrame(float hdrSdrRatio) {
         return result;
     }
 
-    if (mCurrentBuffer != nullptr && mCurrentBuffer->width == 1920 &&
-        mCurrentBuffer->height == 1080 && mCurrentBuffer->stride == 1920) {
+    // ARDA_PCT_DYNAMIC_SOURCE_QUEUE_V1:
+    // Backend decides if source/sink geometry is an exact zero-copy match.
+    if (mCurrentBuffer != nullptr) {
         status_t ardaQueue = ardaPctDirectMirrorQueue(mCurrentBuffer, mCurrentFence);
         ALOGE_IF(ardaQueue != NO_ERROR && ardaQueue != NO_INIT && ardaQueue != WOULD_BLOCK,
                   "ARDA_PCT_DIRECT_PHYSICAL_QUEUE_FAIL err=%d source=%" PRIu64,

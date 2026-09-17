@@ -156,6 +156,18 @@ status_t LegacyVirtualDisplaySurface::beginFrame(bool mustRecompose) {
                 ftl::enum_string(mDebugState).c_str());
     mDebugState = DebugState::Begun;
 
+    if (mDisplayName.find("ScreenRecorder") != std::string::npos &&
+        ardaCapturePerformanceProfileEnabled() &&
+        ardaPctDirectMirrorTxpBypassReady()) {
+        static uint64_t ardaPctV24_2BeginBypass = 0;
+        ++ardaPctV24_2BeginBypass;
+        if (ardaPctV24_2BeginBypass <= 5 || ardaPctV24_2BeginBypass % 60 == 0) {
+            ALOGI("ARDA_PCT_V24_2_VDS_BEGIN_BYPASS frame=%" PRIu64,
+                  ardaPctV24_2BeginBypass);
+        }
+        return NO_ERROR;
+    }
+
     return refreshOutputBuffer();
 }
 
@@ -169,6 +181,11 @@ status_t LegacyVirtualDisplaySurface::prepareFrame(CompositionType compositionTy
     mDebugState = DebugState::Prepared;
 
     mCompositionType = compositionType;
+    if (mDisplayName.find("ScreenRecorder") != std::string::npos &&
+        ardaCapturePerformanceProfileEnabled() &&
+        ardaPctDirectMirrorTxpBypassReady()) {
+        return NO_ERROR;
+    }
     if (mForceHwcCopy && mCompositionType == CompositionType::Gpu) {
         // Some hardware can do RGB->YUV conversion more efficiently in hardware
         // controlled by HWC than in hardware controlled by the video encoder.
@@ -224,6 +241,18 @@ status_t LegacyVirtualDisplaySurface::advanceFrame(float hdrSdrRatio) {
                     ftl::enum_string(mDebugState).c_str());
     }
     mDebugState = DebugState::Hwc;
+
+    if (mDisplayName.find("ScreenRecorder") != std::string::npos &&
+        ardaCapturePerformanceProfileEnabled() &&
+        ardaPctDirectMirrorTxpBypassReady()) {
+        static uint64_t ardaPctV24_2AdvanceBypass = 0;
+        ++ardaPctV24_2AdvanceBypass;
+        if (ardaPctV24_2AdvanceBypass <= 5 || ardaPctV24_2AdvanceBypass % 60 == 0) {
+            ALOGI("ARDA_PCT_V24_2_VDS_ADVANCE_BYPASS frame=%" PRIu64,
+                  ardaPctV24_2AdvanceBypass);
+        }
+        return NO_ERROR;
+    }
 
     if (mOutputProducerSlot < 0 ||
         (mCompositionType != CompositionType::Hwc && mFbProducerSlot < 0)) {
